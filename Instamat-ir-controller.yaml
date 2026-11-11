@@ -27,7 +27,7 @@ esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
   project:
-    name: Struikrover.instamat_ir_controller
+    name: Struikr0ver.instamat_ir_controller
     version: "1.0.0"    
   includes:
     - Instamat-ir-controller_engine.h
