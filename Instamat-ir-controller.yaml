@@ -1,0 +1,342 @@
+# ==========================================================
+# Instamat IR Controller
+# Version: 1.0
+# Release Date: 11-11-2026
+# Created by Maurice Smeele
+# ==========================================================
+
+
+# ==========================================================
+# ESPHome substitutions
+# --------------------------
+substitutions:
+  device_name: instamat-ir-controller
+  friendly_name: "Instamat IR Controller"  
+  comfort_function: "22"                        # Sun symbol        
+  night_function: "18"                          # Half moon symbol
+  fil_Pilot_function: "20"                      # Fill-Pilot Symbol
+  chrono_function: "21"                         # Clock symbol
+  gpio_transmitter: "GPIO4"                     # GPIO Transmitter
+  gpio_receiver: "GPIO5"                        # GPIO Receiver 
+  gpio_status_led: "GPIO13"                     # GPIO Status LED 
+  gpio_button: "GPIO0"                          # GPIO physical button (no function)
+  temp_sensor: "sensor.temperature_bathroom"    # Your external roomtemprature sensor for climate             
+#
+# ==========================================================
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  includes:
+    - Instamat-ir-controller_engine.h
+
+esp8266:
+  board: esp12e
+
+logger:
+  level: DEBUG
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password                # Store password \config\espFill-Pilot\secrets.yaml 
+  ap:
+    ssid: "Athom IR Remote Fallback"
+    password: !secret ap_password                # Store password \config\espFill-Pilot\secrets.yaml 
+
+captive_portal:
+
+#web_server:
+  #port: 80
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+api:
+remote_transmitter:
+  pin: ${gpio_transmitter}                        # <- GPIO04
+  carrier_duty_percent: 50%
+
+remote_receiver:
+  pin:
+    number: ${gpio_receiver}                      # <- GPIO05 ??
+    inverted: true
+    mode: INPUT_PULLUP
+  dump: raw    
+  idle: 20ms
+  on_raw:
+    then:
+      - lambda: |-
+          uint8_t d[5];
+  
+          if (!radiator::decode_frame(x, d)) {
+            ESP_LOGD("RAD", "decode_frame mislukt");
+            return;
+          }
+  
+          radiator::Decoded r;
+  
+          if (!radiator::rx_add(d, millis(), r)) {
+            ESP_LOGD("RAD", "wachten op meer frames");
+            return;
+          }
+  
+          ESP_LOGI("RAD", "Frame compleet ontvangen");
+          ESP_LOGI("RAD", "Mode='%s'", r.mode.c_str());
+  
+          id(rad_last_text).publish_state(radiator::describe(r));
+  
+          if (r.has_schedule) {
+            id(rad_sched_active).publish_state(
+              radiator::schedule_any(r.schedule)
+            );
+          }
+  
+          if (r.mode == "onbekend") {
+            ESP_LOGI("RAD", "Mode onbekend");
+            return;
+          }
+  
+          bool power = (r.mode != "Off");
+          ESP_LOGI("RAD", "Power=%s", power ? "ON" : "OFF");
+  
+          id(rad_power_state).publish_state(power);
+  
+          if (r.mode == "Boost") {
+            id(rad_mode) = "Boost";
+            id(rad_mode_select).publish_state("Boost");
+            id(radiator_Boost_timer).execute();
+          } else {
+            id(radiator_Boost_timer).stop();
+  
+            id(rad_mode) = r.mode;
+            id(rad_prev_mode) = r.mode;
+  
+            if (r.mode != "Off")
+              id(rad_last_on) = r.mode;
+  
+            id(rad_mode_select).publish_state(r.mode);
+  
+            if (r.temp_valid) {
+              id(rad_temp) = r.temp;
+              id(rad_temp_number).publish_state(r.temp);
+            }
+          }
+  
+            id(rad_climate_sync).execute();
+
+status_led:
+  pin:
+    number: ${gpio_status_led} 
+    inverted: true          
+          
+globals:
+  - id: rad_mode
+    type: std::string
+    initial_value: '"Off"'
+  - id: rad_prev_mode                               # Program before  "Boost"
+    type: std::string
+    initial_value: '"Off"'
+  - id: rad_last_on                                 # Last running program 
+    type: std::string
+    initial_value: '"Comfort"'
+  - id: rad_temp
+    type: float
+    initial_value: '21.0'
+
+binary_sensor:
+  - platform: template
+    name: "Radiator ON"
+    id: rad_power_state
+    device_class: power
+  - platform: template
+    name: "Radiator has schedule"                  # Check whether a weekly schedule was set on the remote
+    id: rad_sched_active
+
+  - platform: gpio
+    pin:
+      number: GPIO0
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    name: "Button"
+    
+text_sensor:
+  - platform: template
+    name: "Radiator last remote-signal"
+    id: rad_last_text
+
+sensor:
+  - platform: homeassistant
+    id: room_temp
+    entity_id: ${temp_sensor}                       # Badkamer external roomtemprature sensor
+climate:
+  - platform: template
+    id: rad_climate
+    name: "Radiator"
+    sensor: room_temp
+    optimistic: false
+    restore_mode: NO_RESTORE
+    initial_state:
+      mode: "OFF"
+      target_temperature: 21.0
+    supported_modes:
+      - "OFF"
+      - HEAT
+    custom_presets:
+      - "Comfort"
+      - "Night"
+      - "Fill-Pilot"
+      - "Frost protection"
+      - "Clock program"
+      - "Boost"
+    visual:
+      min_temperature: 15
+      max_temperature: 24
+      temperature_step: 0.5
+    set_mode_action:
+      - if:
+          condition:
+            lambda: 'return x == climate::CLIMATE_MODE_OFF;'
+          then:
+            - select.set:
+                id: rad_mode_select
+                option: "Off"
+          else:
+            - if:
+                condition:
+                  lambda: 'return id(rad_mode) == "Off";'
+                then:
+                  - select.set:
+                      id: rad_mode_select
+                      option: !lambda 'return id(rad_last_on);'
+    set_custom_preset_action:
+      - select.set:
+          id: rad_mode_select
+          option: !lambda 'return std::string(x.c_str());'
+    set_target_temperature_action:
+      - number.set:
+          id: rad_temp_number
+          value: !lambda 'return x;'
+
+script:
+  - id: radiator_send
+    mode: restart
+    then:
+      - remote_transmitter.transmit_raw:
+          carrier_frequency: 38kHz
+          code: !lambda |-
+            auto t = id(ha_time).now();
+            // ESPFill-Pilot: day_of_week 1 = zondag .. 7 = zaterdag  ->  0 = maandag .. 6 = zondag
+            int wday = t.is_valid() ? (t.day_of_week + 5) % 7 : 0;
+            return radiator::build(id(rad_mode), id(rad_temp), wday, t.hour, t.minute, t.second);
+      - lambda: 'id(rad_sched_active).publish_state(false);'
+      - script.execute: rad_climate_sync
+
+  # sync climate state with Home Assistant
+  - id: rad_climate_sync
+    mode: restart
+    then:
+      - lambda: |-
+          id(rad_power_state).publish_state(id(rad_mode) != "Off");
+  
+      - if:
+          condition:
+            lambda: 'return id(rad_mode) == "Off";'
+          then:
+            - climate.template.publish:
+                id: rad_climate
+                mode: "OFF"
+                target_temperature: !lambda 'return id(rad_temp);'
+          else:
+            - climate.template.publish:
+                id: rad_climate
+                mode: Heat
+                target_temperature: !lambda 'return id(rad_temp);'
+                custom_preset: !lambda 'return id(rad_mode);'
+
+  # Boost Times the boost state and set state back to last program.
+  - id: radiator_Boost_timer
+    mode: restart
+    then:
+      - delay: 2h
+      - lambda: |-
+          if (id(rad_mode) == "Boost") {
+            id(rad_mode) = id(rad_prev_mode);
+            id(rad_mode_select).publish_state(id(rad_mode));
+          }
+      - script.execute: radiator_send
+
+select:
+  - platform: template
+    name: "Radiator programma"
+    id: rad_mode_select
+    internal: true
+    options:
+      - "Off"
+      - "Comfort"
+      - "Night"
+      - "Fill-Pilot"
+      - "Frost protection"
+      - "Clock program"
+      - "Boost"
+    initial_option: "Off"
+    optimistic: true
+    restore_value: false
+    set_action:
+      - lambda: |-
+          std::string m = x;
+          if (m != "Boost") id(rad_prev_mode) = m;
+          if (m != "Boost" && m != "Off") id(rad_last_on) = m;
+          id(rad_mode) = m;
+          float p = id(rad_temp);
+          if (m == "Comfort") p = ${comfort_function};
+          else if (m == "Night") p = ${night_function};
+          else if (m == "Fill-Pilot") p = ${fil_Pilot_function};
+          else if (m == "Clock program") p = ${chrono_function};
+          id(rad_temp) = p;
+          id(rad_temp_number).publish_state(p);         // schuif springt naar de temperatuur van het programma
+      - script.execute: radiator_send
+      - if:
+          condition:
+            lambda: 'return x == "Boost";'
+          then:
+            - script.execute: radiator_Boost_timer
+          else:
+            - script.stop: radiator_Boost_timer
+
+number:
+  - platform: template
+    name: "Radiator temperatuur"
+    id: rad_temp_number
+    internal: true             
+    unit_of_measurement: "°C"
+    min_value: 15
+    max_value: 24
+    step: 0.5
+    initial_value: 21
+    optimistic: true
+    restore_value: false
+    set_action:
+      - lambda: 'id(rad_temp) = x;'
+      - if:
+          condition:
+            lambda: 'return id(rad_mode) != "Off" && id(rad_mode) != "Frost protection" && id(rad_mode) != "Boost";'
+          then:
+            - script.execute: radiator_send
+          else:
+            - script.execute: rad_climate_sync
+
+button:                                                         # Primarily intended for development and commissioning, repeats last command.
+  - platform: template
+    name: "Radiator resend"
+    on_press:
+      - script.execute: radiator_send
+      
+# ==========================================================
+# End of Configuration
+# ==========================================================
