@@ -1,17 +1,15 @@
 # ==========================================================
 # Instamat IR Controller
 # Version: 1.0
-# Release Date: 11-11-2026
-# Created by StruikRover
+# Created by Maurice Smeele
 # https://github.com/StruikR0ver/Instamat-IR-Controller
 # ==========================================================
-
 
 # ==========================================================
 # ESPHome substitutions
 # --------------------------
 substitutions:
-  device_name: instamat-ir-controller
+  device_name: "instamat-ir-controller"
   friendly_name: "Instamat IR Controller"  
   comfort_function: "22"                        # Sun symbol        
   night_function: "18"                          # Half moon symbol
@@ -21,13 +19,16 @@ substitutions:
   gpio_receiver: "GPIO5"                        # GPIO Receiver 
   gpio_status_led: "GPIO13"                     # GPIO Status LED 
   gpio_button: "GPIO0"                          # GPIO physical button (no function)
-  temp_sensor: "sensor.temperature_bathroom"    # Your external roomtemprature sensor for climate             
+  temp_sensor: "sensor.temperature_bathroom"    # External roomtemprature sensor for climate             
 #
 # ==========================================================
 
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
+  project:
+    name: Struikrover.instamat_ir_controller
+    version: "1.0.0"    
   includes:
     - Instamat-ir-controller_engine.h
 
